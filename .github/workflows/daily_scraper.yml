@@ -1,0 +1,87 @@
+# .github/workflows/daily_scraper.yml
+# ====================================
+# Runs the Wuzzuf scraper daily at 06:00 UTC and commits
+# updated data files back to the repository.
+#
+# Setup:
+#   1. Add this file to .github/workflows/ in your repo.
+#   2. Set WUZZUF_MAX_JOBS in repo Settings → Secrets → Actions (optional).
+#   3. The workflow auto-commits dataset_jobs.json and scraped_jobs_log.json.
+
+name: Daily Wuzzuf Job Scraper
+
+on:
+  schedule:
+    - cron: "0 6 * * *"        # 06:00 UTC every day
+  workflow_dispatch:            # also allow manual trigger from GitHub UI
+
+permissions:
+  contents: write               # needed to push data files back
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # ── 2. Python setup ────────────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # ── 3. Install dependencies ────────────────────────────────────────
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4 lxml
+
+      # ── 4. Run scraper ─────────────────────────────────────────────────
+      - name: Run Wuzzuf scraper
+        env:
+          WUZZUF_MAX_JOBS: ${{ vars.WUZZUF_MAX_JOBS || '100' }}
+        run: python wuzzuf_scraper.py
+
+      # ── 5. Upload artifacts (always, even on failure) ──────────────────
+      - name: Upload logs and dataset as workflow artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scraper-output-${{ github.run_id }}
+          path: |
+            dataset_jobs.json
+            scraped_jobs_log.json
+            scraper.log
+            run_report.json
+          retention-days: 30
+
+      # ── 6. Commit updated data files back to repo ──────────────────────
+      - name: Commit updated data files
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add dataset_jobs.json scraped_jobs_log.json run_report.json || true
+          git diff --cached --quiet || git commit -m "chore(data): daily scraper run $(date -u +'%Y-%m-%d')"
+          git push
+
+      # ── 7. Notify via webhook (n8n / Make.com) ─────────────────────────
+      # Set N8N_WEBHOOK_URL (or MAKE_WEBHOOK_URL) in repo Secrets.
+      - name: Notify n8n / Make.com webhook
+        if: always()
+        env:
+          WEBHOOK_URL: ${{ secrets.N8N_WEBHOOK_URL }}
+        run: |
+          if [ -n "$WEBHOOK_URL" ]; then
+            REPORT=$(cat run_report.json 2>/dev/null || echo '{}')
+            curl -s -X POST "$WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -d "{\"event\":\"scraper_complete\",\"repo\":\"$GITHUB_REPOSITORY\",\"run_id\":\"$GITHUB_RUN_ID\",\"report\":$REPORT}"
+            echo "Webhook notification sent."
+          else
+            echo "No webhook URL configured — skipping notification."
+          fi
