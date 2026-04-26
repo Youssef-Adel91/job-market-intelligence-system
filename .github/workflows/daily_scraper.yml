@@ -1,14 +1,9 @@
 # .github/workflows/daily_scraper.yml
 # ====================================
-# Runs the Wuzzuf scraper daily at 06:00 UTC and commits
-# updated data files back to the repository.
-#
-# Setup:
-#   1. Add this file to .github/workflows/ in your repo.
-#   2. Set WUZZUF_MAX_JOBS in repo Settings → Secrets → Actions (optional).
-#   3. The workflow auto-commits dataset_jobs.json and scraped_jobs_log.json.
+# Runs the Job scraper daily at 06:00 UTC, generates EDA dashboard,
+# and commits updated data files back to the repository.
 
-name: Daily Wuzzuf Job Scraper
+name: Daily Job Market Scraper & EDA
 
 on:
   schedule:
@@ -19,7 +14,7 @@ permissions:
   contents: write               # needed to push data files back
 
 jobs:
-  scrape:
+  scrape_and_analyze:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -39,15 +34,21 @@ jobs:
 
       # ── 3. Install dependencies ────────────────────────────────────────
       - name: Install dependencies
-        run: pip install requests beautifulsoup4 lxml
+        run: pip install requests beautifulsoup4 lxml cloudscraper fake-useragent
 
       # ── 4. Run scraper ─────────────────────────────────────────────────
-      - name: Run Wuzzuf scraper
+      - name: Run Job Scraper
         env:
-          WUZZUF_MAX_JOBS: ${{ vars.WUZZUF_MAX_JOBS || '100' }}
-        run: python wuzzuf_scraper.py
+          SCRAPER_SITE: "forasna"
+          SCRAPER_MAX_JOBS: ${{ vars.SCRAPER_MAX_JOBS || '100' }}
+        run: python job_scraper.py
 
-      # ── 5. Upload artifacts (always, even on failure) ──────────────────
+      # ── 5. Run EDA Dashboard ───────────────────────────────────────────
+      - name: Update EDA Dashboard
+        run: python generate_eda.py
+        continue-on-error: true  # يحمي الاستريمينج من الوقوف لو حدث خطأ هنا
+
+      # ── 6. Upload artifacts (always, even on failure) ──────────────────
       - name: Upload logs and dataset as workflow artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -60,17 +61,17 @@ jobs:
             run_report.json
           retention-days: 30
 
-      # ── 6. Commit updated data files back to repo ──────────────────────
+      # ── 7. Commit updated data files back to repo ──────────────────────
       - name: Commit updated data files
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add dataset_jobs.json scraped_jobs_log.json run_report.json || true
-          git diff --cached --quiet || git commit -m "chore(data): daily scraper run $(date -u +'%Y-%m-%d')"
+          git add dataset_jobs.json scraped_jobs_log.json run_report.json README.md || true
+          git diff --cached --quiet || git commit -m "Automated Daily Update: Jobs & EDA [$(date -u +'%Y-%m-%d')]"
           git push
 
-      # ── 7. Notify via webhook (n8n / Make.com) ─────────────────────────
-      # Set N8N_WEBHOOK_URL (or MAKE_WEBHOOK_URL) in repo Secrets.
+      # ── 8. Notify via webhook (n8n / Make.com) ─────────────────────────
+      # Set N8N_WEBHOOK_URL (or MAKE_WEBHOOK_URL) in repo Settings -> Secrets.
       - name: Notify n8n / Make.com webhook
         if: always()
         env:
